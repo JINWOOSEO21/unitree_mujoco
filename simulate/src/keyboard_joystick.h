@@ -26,13 +26,27 @@
  * 버튼은 누른 순간 kLatchMs 동안 눌린 것으로 유지했다가 저절로 떼진다. FSM 의
  * `.on_pressed` 가 상승 엣지를 봐야 하는데, 터미널 키 입력에는 "뗌" 이벤트가
  * 없기 때문이다.
+ *
+ * 잡 컨트롤 (`&` 로 띄웠을 때 멈추던 문제)
+ * ----------------------------------------
+ * 백그라운드 프로세스 그룹이 제어 터미널에 tcsetattr 을 하면 SIGTTOU, read 를 하면
+ * SIGTTIN 을 받고 **기본 동작이 프로세스 정지**다. 정지되면 GLFW 이벤트 루프가
+ * 멈춰 창이 "응답 없음" 이 된다. SIGCONT 로 깨워도 중단된 syscall 이 재시작되며
+ * 다시 정지하므로 빠져나오지 못한다.
+ *
+ * 그래서 터미널은 **포그라운드 프로세스 그룹일 때만** 건드린다. 판정은 매 반복
+ * `tcgetpgrp(0) == getpgrp()` 로 한다 — 덕분에 `./unitree_mujoco &` 로 띄워도
+ * 멈추지 않고, 나중에 `fg` 하면 키보드가 저절로 살아난다. 두 신호는 무시로
+ * 돌려 놓아(SIG_IGN) 경계에서 걸치더라도 정지 대신 오류 반환이 되게 한다.
  */
 
 #include <termios.h>
 #include <unistd.h>
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <iostream>
 #include <thread>
@@ -44,22 +58,20 @@ class KeyboardJoystick : public unitree::common::UnitreeJoystick
 public:
     KeyboardJoystick() : unitree::common::UnitreeJoystick()
     {
+        // 백그라운드에서 터미널을 건드려도 **정지되지 않게** 한다.
+        // SIGTTOU 를 무시하면 tcsetattr 이 그냥 성공하고, SIGTTIN 을 무시하면
+        // read 가 정지 대신 EIO 로 실패한다 (POSIX). 둘 다 아래 로직이 처리한다.
+        std::signal(SIGTTOU, SIG_IGN);
+        std::signal(SIGTTIN, SIG_IGN);
+
         if (!isatty(STDIN_FILENO)) {
             std::cerr << "[KeyboardJoystick] stdin 이 터미널이 아니다. 키 입력을 받을 수 없다."
                       << std::endl;
-        } else {
-            tcgetattr(STDIN_FILENO, &old_termios_);
-            struct termios raw = old_termios_;
-            // 캐노니컬 모드/에코 끄기 = 엔터 없이 한 글자씩 즉시 읽는다.
-            raw.c_lflag &= ~(ICANON | ECHO);
-            raw.c_cc[VMIN] = 0;   // 없으면 즉시 반환
-            raw.c_cc[VTIME] = 1;  // 0.1s 대기
-            tcsetattr(STDIN_FILENO, TCSANOW, &raw);
-            restore_termios_ = true;
         }
 
         print_help();
         running_ = true;
+        // raw 모드 전환은 read_loop 이 포그라운드 여부를 보며 직접 관리한다.
         thread_ = std::thread([this] { this->read_loop(); });
     }
 
@@ -69,7 +81,7 @@ public:
     {
         running_ = false;
         if (thread_.joinable()) thread_.join();
-        if (restore_termios_) tcsetattr(STDIN_FILENO, TCSANOW, &old_termios_);
+        disable_raw();  // SIGTTOU 를 무시해 뒀으므로 백그라운드에서도 안전하다
     }
 
     void update() override
@@ -141,12 +153,71 @@ private:
                   << std::endl;
     }
 
+    /// stdin 이 터미널이고, 우리가 그 터미널의 포그라운드 프로세스 그룹인가.
+    static bool stdin_is_foreground()
+    {
+        if (!isatty(STDIN_FILENO)) return false;
+        const pid_t fg = tcgetpgrp(STDIN_FILENO);
+        return fg != -1 && fg == getpgrp();
+    }
+
+    void enable_raw()
+    {
+        if (raw_active_) return;
+        if (tcgetattr(STDIN_FILENO, &old_termios_) != 0) return;
+        struct termios raw = old_termios_;
+        // 캐노니컬 모드/에코 끄기 = 엔터 없이 한 글자씩 즉시 읽는다.
+        raw.c_lflag &= ~(ICANON | ECHO);
+        raw.c_cc[VMIN] = 0;   // 없으면 즉시 반환
+        raw.c_cc[VTIME] = 1;  // 0.1s 대기 — 이 타임아웃이 폴링 주기가 된다
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) return;
+        raw_active_ = true;
+    }
+
+    void disable_raw()
+    {
+        if (!raw_active_) return;
+        tcsetattr(STDIN_FILENO, TCSANOW, &old_termios_);
+        raw_active_ = false;
+    }
+
     void read_loop()
     {
+        bool warned_background = false;
         while (running_) {
+            if (!stdin_is_foreground()) {
+                // 백그라운드(또는 stdin 이 터미널이 아님) — 터미널을 놓고 쉰다.
+                disable_raw();
+                if (!warned_background && isatty(STDIN_FILENO)) {
+                    std::cerr << "[KeyboardJoystick] 백그라운드로 실행돼 키 입력을 받지 않는다. "
+                                 "`fg` 로 포그라운드에 올리면 자동으로 살아난다."
+                              << std::endl;
+                    warned_background = true;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
+            if (!raw_active_) {
+                enable_raw();
+                if (warned_background) {
+                    std::cerr << "[KeyboardJoystick] 포그라운드 복귀 — 키 입력을 다시 받는다."
+                              << std::endl;
+                    warned_background = false;
+                }
+                if (!raw_active_) {  // 터미널을 못 잡았다 — 다음 바퀴에 재시도
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                    continue;
+                }
+            }
+
             char c = 0;
             const ssize_t n = ::read(STDIN_FILENO, &c, 1);
-            if (n <= 0) continue;
+            // n == 0 은 VTIME 타임아웃(정상). n < 0 은 EIO 등 — 어느 쪽이든
+            // raw 모드의 0.1s 타임아웃이 폴링 주기라 바쁜 대기가 되지 않는다.
+            if (n <= 0) {
+                if (n < 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                continue;
+            }
             switch (c) {
                 case '1': latch(until_1_); break;
                 case '2': latch(until_2_); break;
@@ -172,7 +243,7 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     struct termios old_termios_{};
-    bool restore_termios_ = false;
+    bool raw_active_ = false;
 
     std::atomic<int64_t> until_1_{0}, until_2_{0}, until_0_{0};
     std::atomic<double> lx_{0.0}, ly_{0.0}, rx_{0.0};
