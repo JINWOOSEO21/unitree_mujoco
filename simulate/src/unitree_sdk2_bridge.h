@@ -13,6 +13,7 @@
 
 #include "param.h"
 #include "physics_joystick.h"
+#include "keyboard_joystick.h"
 
 #define MOTOR_SENSOR_NUM 3
 
@@ -31,6 +32,9 @@ public:
                 joystick = std::make_shared<XBoxJoystick>(param::config.joystick_device, param::config.joystick_bits);
             } else if(param::config.joystick_type == "switch") {
                 joystick  = std::make_shared<SwitchJoystick>(param::config.joystick_device, param::config.joystick_bits);
+            } else if(param::config.joystick_type == "keyboard") {
+                // 게임패드 없이 키보드로 FSM 을 넘기기 위한 구현 (keyboard_joystick.h 참고)
+                joystick = std::make_shared<KeyboardJoystick>();
             } else {
                 std::cerr << "Unsupported joystick type: " << param::config.joystick_type << std::endl;
                 exit(EXIT_FAILURE);
