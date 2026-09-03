@@ -1,4 +1,5 @@
 #include <unistd.h>
+#include <cstdint>  // uint8_t / uint16_t — GCC 13 부터 다른 헤더를 통해 딸려오지 않는다
 #include <iostream>
 #include <map>
 #include "joystick.h"
