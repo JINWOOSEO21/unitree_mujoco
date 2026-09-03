@@ -105,6 +105,10 @@
               type="cylinder" class="collision" />
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black" />
             <geom name="FL" class="foot" />
+            <!-- touch 센서용 site. 발 구(r=0.022)를 살짝 감싸도록 조금 크게 잡는다.
+                 MuJoCo touch 센서는 site 부피 안에 들어온 접촉의 법선력을 합산한다. -->
+            <site name="FL_foot_site" pos="-0.002 0 -0.213" size="0.025" type="sphere"
+              rgba="1 0 0 0.2" group="4" />
             <body name="FL_foot" pos="0 0 -0.213" />
           </body>
         </body>
@@ -140,6 +144,8 @@
               type="cylinder" class="collision" />
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black" />
             <geom name="FR" class="foot" />
+            <site name="FR_foot_site" pos="-0.002 0 -0.213" size="0.025" type="sphere"
+              rgba="1 0 0 0.2" group="4" />
             <body name="FR_foot" pos="0 0 -0.213" />
           </body>
         </body>
@@ -175,6 +181,8 @@
               type="cylinder" class="collision" />
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black" />
             <geom name="RL" class="foot" />
+            <site name="RL_foot_site" pos="-0.002 0 -0.213" size="0.025" type="sphere"
+              rgba="1 0 0 0.2" group="4" />
             <body name="RL_foot" pos="0 0 -0.213" />
           </body>
         </body>
@@ -212,6 +220,8 @@
               type="cylinder" class="collision" />
             <geom pos="0 0 -0.213" mesh="foot" class="visual" material="black" />
             <geom name="RR" class="foot" />
+            <site name="RR_foot_site" pos="-0.002 0 -0.213" size="0.025" type="sphere"
+              rgba="1 0 0 0.2" group="4" />
             <body name="RR_foot" pos="0 0 -0.213" />
           </body>
         </body>
@@ -280,6 +290,14 @@
     
     <framepos name="frame_pos" objtype="site" objname="imu" />
     <framelinvel name="frame_vel" objtype="site" objname="imu" />
+
+    <!-- 발 접촉력. lowstate.foot_force 를 채우는 데 쓴다.
+         순서는 Unitree SDK 의 다리 순서(FR, FL, RR, RL)와 맞춘다 —
+         위 jointpos/jointvel 이 이미 그 순서다. -->
+    <touch name="FR_touch" site="FR_foot_site" />
+    <touch name="FL_touch" site="FL_foot_site" />
+    <touch name="RR_touch" site="RR_foot_site" />
+    <touch name="RL_touch" site="RL_foot_site" />
   </sensor>
 
   <keyframe>

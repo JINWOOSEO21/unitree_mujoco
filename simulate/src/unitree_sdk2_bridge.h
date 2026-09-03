@@ -17,6 +17,14 @@
 
 #define MOTOR_SENSOR_NUM 3
 
+// RobotBridge::run() 은 go2(unitree_go IDL)와 g1(unitree_hg IDL)에 공용으로 쓰이는
+// 템플릿인데, foot_force 는 사족보행 쪽 IDL 에만 있다. 그래서 컴파일 타임에 유무를
+// 판별해 있을 때만 채운다 (없는 쪽에서 컴파일 에러가 나지 않도록).
+template <typename T, typename = void>
+struct has_foot_force : std::false_type {};
+template <typename T>
+struct has_foot_force<T, std::void_t<decltype(std::declval<T&>().foot_force())>> : std::true_type {};
+
 class UnitreeSDK2BridgeBase
 {
 public:
@@ -92,6 +100,10 @@ protected:
     int secondary_imu_gyro_adr_ = -1;
     int secondary_imu_acc_adr_ = -1;
 
+    // 발 접촉력 센서(touch) 주소. 순서는 Unitree SDK 다리 순서 FR, FL, RR, RL.
+    // MJCF 에 touch 센서가 없으면 -1 로 남고 foot_force 는 0 이 된다.
+    int foot_touch_adr_[4] = {-1, -1, -1, -1};
+
     std::shared_ptr<unitree::common::UnitreeJoystick> joystick = nullptr;
 
     void _check_sensor()
@@ -130,6 +142,17 @@ protected:
         sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, "frame_vel");
         if (sensor_id >= 0) {
             frame_vel_adr_ = mj_model_->sensor_adr[sensor_id];
+        }
+
+        // Foot touch sensors (SDK 다리 순서: FR, FL, RR, RL)
+        {
+            const char* foot_touch_names[4] = {"FR_touch", "FL_touch", "RR_touch", "RL_touch"};
+            for (int i = 0; i < 4; i++) {
+                sensor_id = mj_name2id(mj_model_, mjOBJ_SENSOR, foot_touch_names[i]);
+                if (sensor_id >= 0) {
+                    foot_touch_adr_[i] = mj_model_->sensor_adr[sensor_id];
+                }
+            }
         }
 
         // Secondary IMU quaternion
@@ -226,6 +249,17 @@ public:
                 lowstate->msg_.imu_state().accelerometer()[2] = mj_data_->sensordata[imu_acc_adr_ + 2];
             }
             
+            // 발 접촉력. MuJoCo touch 센서는 site 부피 안 접촉의 법선력 합(스칼라, N)을 낸다.
+            // 실기 Go2 의 foot_force 는 정수형 원시값이라 스케일이 다르지만, 정책이 쓰는 것은
+            // "임계값 초과 여부"(2N)뿐이므로 물리량 그대로 넣는다.
+            if constexpr (has_foot_force<std::decay_t<decltype(lowstate->msg_)>>::value) {
+                for (int i = 0; i < 4; i++) {
+                    if (foot_touch_adr_[i] >= 0) {
+                        lowstate->msg_.foot_force()[i] = mj_data_->sensordata[foot_touch_adr_[i]];
+                    }
+                }
+            }
+
             lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
             lowstate->unlockAndPublish();
         }
