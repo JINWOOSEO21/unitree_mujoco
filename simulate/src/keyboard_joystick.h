@@ -150,6 +150,9 @@ private:
                   << "  2 : start RL 정책 시작\n"
                   << "  0 : LT+B  Passive(힘 빼기)\n"
                   << "  w/s 전진·후진   a/d 좌·우   q/e 회전   space 정지\n"
+                  << "  h : 이 도움말 다시 보기\n"
+                  << "  (누른 키는 [key] 줄로 표시된다. 아무 표시도 없으면 이 터미널에\n"
+                  << "   포커스가 없거나 백그라운드로 실행된 것이다.)\n"
                   << std::endl;
     }
 
@@ -218,24 +221,49 @@ private:
                 if (n < 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
+            // raw 모드는 ECHO 를 끄기 때문에 누른 키가 화면에 찍히지 않는다.
+            // 아무 표시가 없으면 "키가 먹었는지" 를 알 길이 없어서(그리고 실제로
+            // 그것 때문에 로봇이 안 움직이는 것을 키보드 탓으로 오해하기 쉬워서)
+            // 인식한 키를 한 줄로 알려 준다.
             switch (c) {
-                case '1': latch(until_1_); break;
-                case '2': latch(until_2_); break;
-                case '0': latch(until_0_); break;
-                case 'w': ly_.store(clamp(ly_.load() + 0.25)); break;
-                case 's': ly_.store(clamp(ly_.load() - 0.25)); break;
-                case 'a': lx_.store(clamp(lx_.load() - 0.25)); break;
-                case 'd': lx_.store(clamp(lx_.load() + 0.25)); break;
-                case 'q': rx_.store(clamp(rx_.load() - 0.25)); break;
-                case 'e': rx_.store(clamp(rx_.load() + 0.25)); break;
+                case '1': latch(until_1_); echo_key("1", "LT+A  일어서기(FixStand)"); break;
+                case '2': latch(until_2_); echo_key("2", "start RL 정책 시작"); break;
+                case '0': latch(until_0_); echo_key("0", "LT+B  Passive(힘 빼기)"); break;
+                case 'w': ly_.store(clamp(ly_.load() + 0.25)); echo_stick("w"); break;
+                case 's': ly_.store(clamp(ly_.load() - 0.25)); echo_stick("s"); break;
+                case 'a': lx_.store(clamp(lx_.load() - 0.25)); echo_stick("a"); break;
+                case 'd': lx_.store(clamp(lx_.load() + 0.25)); echo_stick("d"); break;
+                case 'q': rx_.store(clamp(rx_.load() - 0.25)); echo_stick("q"); break;
+                case 'e': rx_.store(clamp(rx_.load() + 0.25)); echo_stick("e"); break;
                 case ' ':
                     lx_.store(0.0);
                     ly_.store(0.0);
                     rx_.store(0.0);
+                    echo_stick("space");
                     break;
-                default: break;
+                case 'h': print_help(); break;
+                default:
+                    // 모르는 키도 알려 준다 — 포커스가 여기 있다는 것 자체가 정보다.
+                    if (c >= 0x20 && c < 0x7f) {
+                        std::printf("[key] '%c' — 할당되지 않은 키다 (h: 도움말)\n", c);
+                        std::fflush(stdout);
+                    }
+                    break;
             }
         }
+    }
+
+    static void echo_key(const char* key, const char* what)
+    {
+        std::printf("[key] %s → %s\n", key, what);
+        std::fflush(stdout);
+    }
+
+    void echo_stick(const char* key)
+    {
+        std::printf("[key] %s → 스틱 lx=%+.2f ly=%+.2f rx=%+.2f\n",
+                    key, lx_.load(), ly_.load(), rx_.load());
+        std::fflush(stdout);
     }
 
     static double clamp(double v) { return v < -1.0 ? -1.0 : (v > 1.0 ? 1.0 : v); }
