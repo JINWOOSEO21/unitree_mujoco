@@ -15,4 +15,12 @@ target_link_libraries(lowstate_echo unitree_sdk2)
 add_executable(wireless_echo wireless_echo.cpp)
 target_link_libraries(wireless_echo unitree_sdk2)
 
+# L1 점군 통계 확인 도구
+add_executable(lidar_echo lidar_echo.cpp)
+target_link_libraries(lidar_echo unitree_sdk2)
+
+# L1 스캔 운동학 덤프 (파이썬 원본과 대조용). DDS/MuJoCo 불필요.
+add_executable(l1_dump_dirs l1_dump_dirs.cpp)
+target_include_directories(l1_dump_dirs PRIVATE ${PROJECT_SOURCE_DIR}/../../simulate/src)
+
 SET(CMAKE_BUILD_TYPE Release)

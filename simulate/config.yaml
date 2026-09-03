@@ -14,3 +14,7 @@ joystick_bits: 16 # Some game controllers may only have 8-bit accuracy
 print_scene_information: 1 # Print link, joint and sensors information of robot
 
 enable_elastic_band: 0 # Virtual spring band, used for lifting h1
+
+# L1 4D LiDAR 시뮬레이션 (rt/utlidar/cloud 로 PointCloud2 발행).
+# 파쿠르 정책의 elevation map 입력용. 다른 태스크는 0 으로 두면 된다.
+enable_lidar: 1

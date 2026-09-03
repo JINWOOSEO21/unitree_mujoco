@@ -14,6 +14,7 @@
 #include "param.h"
 #include "physics_joystick.h"
 #include "keyboard_joystick.h"
+#include "l1_lidar.h"
 
 #define MOTOR_SENSOR_NUM 3
 
@@ -46,6 +47,16 @@ public:
             } else {
                 std::cerr << "Unsupported joystick type: " << param::config.joystick_type << std::endl;
                 exit(EXIT_FAILURE);
+            }
+        }
+
+        if(param::config.enable_lidar == 1) {
+            lidar = std::make_unique<l1::Lidar>(mj_model_);
+            if(lidar->ok()) {
+                std::cout << "[L1] LiDAR 시뮬레이션 활성 — rt/utlidar/cloud 발행" << std::endl;
+            } else {
+                std::cerr << "[L1] base 링크를 찾지 못해 LiDAR 를 끈다." << std::endl;
+                lidar.reset();
             }
         }
 
@@ -105,6 +116,7 @@ protected:
     int foot_touch_adr_[4] = {-1, -1, -1, -1};
 
     std::shared_ptr<unitree::common::UnitreeJoystick> joystick = nullptr;
+    std::unique_ptr<l1::Lidar> lidar = nullptr;
 
     void _check_sensor()
     {
@@ -280,6 +292,10 @@ public:
         // wireless_controller
         if(wireless_controller->joystick) {
             wireless_controller->unlockAndPublish();
+        }
+        // L1 LiDAR — 내부에서 10Hz 로 스로틀한다 (브리지는 1kHz 로 돈다)
+        if(lidar) {
+            lidar->update(mj_data_);
         }
     }
 

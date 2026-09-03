@@ -61,6 +61,10 @@ inline struct SimulationConfig
     int enable_elastic_band;
     int band_attached_link = 0;
 
+    // L1 LiDAR 시뮬레이션. 파쿠르 정책의 elevation map 입력을 만들기 위한 것이라
+    // 기본은 꺼 둔다(레이캐스팅 비용이 있고 다른 태스크는 쓰지 않는다).
+    int enable_lidar = 0;
+
     void load_from_yaml(const std::string &filename)
     {
         auto cfg = YAML::LoadFile(filename);
@@ -80,6 +84,10 @@ inline struct SimulationConfig
             joystick_bits = cfg["joystick_bits"].as<int>();
             print_scene_information = cfg["print_scene_information"].as<int>();
             enable_elastic_band = cfg["enable_elastic_band"].as<int>();
+            // 없어도 되는 항목 — 기존 config.yaml 을 그대로 쓸 수 있게 기본값 유지
+            if (cfg["enable_lidar"]) {
+                enable_lidar = cfg["enable_lidar"].as<int>();
+            }
         }
         catch(const std::exception& e)
         {
