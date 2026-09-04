@@ -72,6 +72,35 @@ public:
     // 맞춘다. main.cc 의 물리 루프가 mj_step 직전에 호출한다.
     virtual void apply_control() {}
 
+    /// LowCmd 의 reserve 필드를 uint32 하나로 읽는다.
+    /// unitree_go(go2) 는 스칼라, unitree_hg(g1/b2) 는 array<uint32_t,4> 라
+    /// RobotBridge 템플릿이 양쪽으로 인스턴스화되려면 오버로드가 필요하다.
+    static uint32_t read_reserve(uint32_t v) { return v; }
+    template <std::size_t N>
+    static uint32_t read_reserve(const std::array<uint32_t, N>& v)
+    {
+        return N > 0 ? v[0] : 0u;
+    }
+
+    /// 모아 둔 지연 표본을 요약해 출력하고 비운다. 물리 루프가 주기적으로 부른다.
+    void report_latency()
+    {
+        if (lat_us_.size() < 50) return;
+        std::vector<uint32_t> v = lat_us_;
+        lat_us_.clear();
+        std::sort(v.begin(), v.end());
+        double sum = 0.0;
+        for (uint32_t x : v) sum += x;
+        const double mean = sum / v.size() / 1000.0;
+        const double p50 = v[v.size() / 2] / 1000.0;
+        const double p95 = v[static_cast<size_t>(v.size() * 0.95)] / 1000.0;
+        const double mx = v.back() / 1000.0;
+        std::printf("[latency] 정책→토크 지연  평균 %.2f ms  p50 %.2f  p95 %.2f  최대 %.2f  "
+                    "(표본 %zu)  | 학습 기준 평균 10.0 ms → 초과 %+.2f ms\n",
+                    mean, p50, p95, mx, v.size(), mean - 10.0);
+        std::fflush(stdout);
+    }
+
     void printSceneInformation()
     {
         auto printObjects = [this](const char* title, int count, int type, auto getIndex) {
@@ -116,6 +145,10 @@ protected:
     // 비어 있으면(관절 구동이 아닌 액추에이터) sensordata 로 되돌아간다.
     std::vector<int> act_qposadr_;
     std::vector<int> act_qveladr_;
+
+    // 종단간 지연 표본 [us] — apply_control() 이 채우고 report_latency() 가 요약한다.
+    std::vector<uint32_t> lat_us_;
+    bool lat_enabled_ = true;
 
     // Sensor data indices
     int imu_quat_adr_ = -1;
@@ -299,6 +332,23 @@ public:
         if(!mj_data_) return;
         const bool direct = (int)act_qposadr_.size() == num_motor_;
         std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+        // 종단간 지연 계측. go2_ctrl 의 State_Parkour 가 lowcmd.reserve 에 "이 목표각을
+        // 정책이 만든 시각"[us, CLOCK_MONOTONIC]을 실어 보낸다. 토크를 거는 지금
+        // 그 나이를 재면 정책→토크 지연이 그대로 나온다.
+        //
+        // 기준: 학습(IsaacLab)은 액션을 한 정책 주기(20 ms) 동안 유지하므로 나이가
+        // 0→20 ms 로 고르게 분포한다 = **평균 10 ms**. 여기서 평균이 10 ms 보다
+        // 얼마나 큰지가 배포에서 더 붙은 지연이다.
+        const uint32_t stamp = read_reserve(lowcmd->msg_.reserve());
+        if (lat_enabled_ && stamp != 0) {
+            const uint32_t now = static_cast<uint32_t>(
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            const uint32_t age = now - stamp;                    // uint32 자연 랩어라운드
+            if (age < 1000000u) {                                 // 1 s 넘으면 정지 상태로 보고 버린다
+                lat_us_.push_back(age);
+            }
+        }
         for(int i(0); i<num_motor_; i++) {
             auto & m = lowcmd->msg_.motor_cmd()[i];
             const double q  = direct ? mj_data_->qpos[act_qposadr_[i]]

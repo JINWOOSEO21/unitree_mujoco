@@ -49,6 +49,13 @@ static inline void StepWithControl(mjModel *m, mjData *d)
 {
   if (auto *b = g_bridge.load(std::memory_order_acquire)) {
     b->apply_control();
+    // 지연 통계를 2초마다 한 줄로 (표본이 모자라면 아무것도 안 찍는다).
+    static auto last = std::chrono::steady_clock::now();
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last > std::chrono::seconds(2)) {
+      last = now;
+      b->report_latency();
+    }
   }
   mj_step(m, d);
 }
