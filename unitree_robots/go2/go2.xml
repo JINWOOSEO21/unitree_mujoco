@@ -11,7 +11,28 @@
   <default>
     <default class="go2">
       <geom friction="0.4" margin="0.001" condim="1"/>
-      <joint axis="0 1 0" damping="0.1" armature="0.01" frictionloss="0.2"/>
+      <!-- armature / damping / frictionloss 를 전부 0 으로 — 학습(IsaacLab)과 맞춘다.
+           menagerie 원래 값은 armature=0.01, damping=0.1, frictionloss=0.2 였으나
+           IsaacLab 쪽 실측(deploy/tools/dump_joint_props.py)은 **셋 다 정확히 0** 이다:
+             armature 0.0 / joint_friction 0.0 / 관절 자체 damping 0.0
+             (ParkourDCMotorCfg 가 friction=0.0 을 명시하고 USD 에 armature 가 없다)
+           armature 0.01 은 작아 보이지만 관절공간 관성에 그대로 더해진다. 기본 자세에서
+           링크만의 관성과 견주면 hip +35%, thigh +40%, **calf +158%** 다. 무릎이 학습의
+           2.6 배로 무거우면 같은 토크로 다리를 못 접어 발이 안 뜨고, 정책은 목표각을
+           점점 크게 밀다가 주저앉는다 — 관측한 증상 그대로다.
+           주의: 실기 Go2 모터에는 로터 관성이 실제로 있다. 즉 이 0 은 "물리적으로 옳은
+           값" 이 아니라 "학습을 재현하는 값" 이다. sim2real 로 갈 때는 정책을 armature 를
+           넣고 재학습해야 한다. 실기 조건으로 되돌리려면 아래 한 줄을 되살릴 것:
+             <joint axis="0 1 0" damping="0.1" armature="0.01" frictionloss="0.2"/>
+
+           한 번 잘못 짚었던 것: 이 값을 0 으로 내렸더니 처음엔 FixStand 가 무너졌다.
+           "armature 는 MuJoCo 의 수치 안정화 장치라 뺄 수 없다" 고 결론지을 뻔했으나,
+           순수 MuJoCo(같은 지형·같은 게인)에서는 armature=0 도 z=0.3195 로 멀쩡했다.
+           범인은 브리지가 PD 를 **한 스텝 낡은 상태**로 계산하던 것이었고
+           (unitree_sdk2_bridge.h 의 apply_control 주석 참고), 그걸 고치니 armature=0
+           에서도 안정적으로 선다. armature 는 그 불안정을 덮고 있었을 뿐이다. -->
+
+      <joint axis="0 1 0" damping="0" armature="0" frictionloss="0"/>
       <!-- 원래 값은 Go2 실기 모터 스펙 ±23.7 N.m 였다. 학습(IsaacLab)은 hip 35 /
            thigh 40 으로 돌았기 때문에, 그대로 두면 MuJoCo 가 우리 토크 포화
            모델보다 **먼저** 23.7 에서 잘라 학습을 재현할 수 없다. 한계는

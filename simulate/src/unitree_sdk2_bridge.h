@@ -64,6 +64,14 @@ public:
 
     virtual void start() {}
 
+    // 관절 PD 토크를 **물리 스텝 직전에 현재 상태로** 계산해 mj_data_->ctrl 에 쓴다.
+    // 원래는 브리지 스레드(1 kHz 벽시계) 안에서 계산했는데, 그러면 한 스텝에 적용되는
+    // 토크가 최대 한 스텝 낡은 상태로 계산된 값이 된다. 감쇠항이 명시적으로 한 스텝
+    // 늦게 들어가는 셈이라 kd*Δt/I 가 커지고, 관절 관성이 작을수록 발산한다.
+    // 학습(IsaacLab)은 매 시뮬 스텝마다 현재 q/dq 로 토크를 계산하므로 여기서도 그렇게
+    // 맞춘다. main.cc 의 물리 루프가 mj_step 직전에 호출한다.
+    virtual void apply_control() {}
+
     void printSceneInformation()
     {
         auto printObjects = [this](const char* title, int count, int type, auto getIndex) {
@@ -99,6 +107,15 @@ protected:
 
     mjData *mj_data_;
     mjModel *mj_model_;
+
+    // 액추에이터 i 가 미는 관절의 qpos/qvel 주소.
+    // PD 는 sensordata 가 아니라 여기서 읽는다 — mj_step 이 돌아온 시점의 sensordata 는
+    // **적분 직전 상태**로 계산된 값이라 항상 한 스텝 낡았기 때문이다. 감쇠항이 한 스텝
+    // 늦게 들어가면 관절 관성이 작을 때 발산한다(측정: armature=0 에서 지연 1스텝이면
+    // FixStand 가 무너지고, 지연 0 이면 멀쩡하다).
+    // 비어 있으면(관절 구동이 아닌 액추에이터) sensordata 로 되돌아간다.
+    std::vector<int> act_qposadr_;
+    std::vector<int> act_qveladr_;
 
     // Sensor data indices
     int imu_quat_adr_ = -1;
@@ -162,12 +179,33 @@ protected:
         return std::min(std::max(tau, tmin), tmax);
     }
 
+    // 액추에이터 → 관절 qpos/qvel 주소. 하나라도 관절 구동이 아니면 전부 비우고
+    // 예전처럼 sensordata 를 쓴다(안전한 쪽으로).
+    void _init_actuator_joint_addresses()
+    {
+        act_qposadr_.clear();
+        act_qveladr_.clear();
+        for (int i = 0; i < mj_model_->nu; ++i) {
+            if (mj_model_->actuator_trntype[i] != mjTRN_JOINT) {
+                act_qposadr_.clear();
+                act_qveladr_.clear();
+                std::cerr << "[motor] 관절 구동이 아닌 액추에이터가 있어 PD 상태를 "
+                             "sensordata 로 읽는다 (한 스텝 지연)." << std::endl;
+                return;
+            }
+            const int j = mj_model_->actuator_trnid[2 * i];
+            act_qposadr_.push_back(mj_model_->jnt_qposadr[j]);
+            act_qveladr_.push_back(mj_model_->jnt_dofadr[j]);
+        }
+    }
+
     void _check_sensor()
     {
         num_motor_ = mj_model_->nu;
         dim_motor_sensor_ = MOTOR_SENSOR_NUM * num_motor_;
         _init_motor_saturation();
-    
+        _init_actuator_joint_addresses();
+
         // Find sensor addresses by name
         int sensor_id = -1;
         
@@ -255,23 +293,28 @@ public:
             "unitree_bridge", UT_CPU_ID_NONE, 1000, [this]() { this->run(); });
     }
 
+    // 물리 스텝 직전에 물리 루프가 부른다 — 현재 q/dq 로 PD 를 계산한다.
+    void apply_control() override
+    {
+        if(!mj_data_) return;
+        const bool direct = (int)act_qposadr_.size() == num_motor_;
+        std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+        for(int i(0); i<num_motor_; i++) {
+            auto & m = lowcmd->msg_.motor_cmd()[i];
+            const double q  = direct ? mj_data_->qpos[act_qposadr_[i]]
+                                     : mj_data_->sensordata[i];
+            const double dq = direct ? mj_data_->qvel[act_qveladr_[i]]
+                                     : mj_data_->sensordata[i + num_motor_];
+            double tau = m.tau() + m.kp() * (m.q() - q) + m.kd() * (m.dq() - dq);
+            mj_data_->ctrl[i] = apply_motor_saturation(i, tau, dq);
+        }
+    }
+
     virtual void run()
     {
         if(!mj_data_) return;
         if(lowstate->joystick) { lowstate->joystick->update(); }
-        // lowcmd
-        {
-            std::lock_guard<std::mutex> lock(lowcmd->mutex_);
-            for(int i(0); i<num_motor_; i++) {
-                auto & m = lowcmd->msg_.motor_cmd()[i];
-                const double dq = mj_data_->sensordata[i + num_motor_];
-                double tau = m.tau() +
-                             m.kp() * (m.q() - mj_data_->sensordata[i]) +
-                             m.kd() * (m.dq() - dq);
-                tau = apply_motor_saturation(i, tau, dq);
-                mj_data_->ctrl[i] = tau;
-            }
-        }
+        // 토크 계산은 여기서 하지 않는다 — apply_control() 이 물리 스텝과 동기로 한다.
 
         // lowstate
         if(lowstate->trylock()) {

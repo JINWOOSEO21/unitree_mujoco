@@ -37,6 +37,22 @@
 
 #define MUJOCO_PLUGIN_DIR "mujoco_plugin"
 
+// 물리 루프가 mj_step 직전에 관절 토크를 계산하도록 브리지를 잡아 둔다.
+// 브리지 스레드가 준비되면 채워지고, 그 전에는 nullptr 이라 아무 일도 하지 않는다.
+// (예전에는 브리지 스레드가 1 kHz 벽시계로 ctrl 을 따로 썼다. 그러면 한 스텝에
+//  적용되는 토크가 최대 한 스텝 낡은 상태로 계산된 값이 되고, 명시적 감쇠가 늦게
+//  들어가 관절 관성이 작을 때 발산한다. 자세한 근거는 unitree_sdk2_bridge.h 의
+//  apply_control() 주석 참고.)
+static std::atomic<UnitreeSDK2BridgeBase *> g_bridge{nullptr};
+
+static inline void StepWithControl(mjModel *m, mjData *d)
+{
+  if (auto *b = g_bridge.load(std::memory_order_acquire)) {
+    b->apply_control();
+  }
+  mj_step(m, d);
+}
+
 extern "C"
 {
 #if defined(_WIN32) || defined(__CYGWIN__)
@@ -461,7 +477,7 @@ namespace
               sim.speed_changed = false;
 
               // run single step, let next iteration deal with timing
-              mj_step(m, d);
+              StepWithControl(m, d);
               stepped = true;
             }
 
@@ -502,7 +518,7 @@ namespace
                 }
 
                 // call mj_step
-                mj_step(m, d);
+                StepWithControl(m, d);
                 stepped = true;
 
                 // break if reset
@@ -609,7 +625,9 @@ void *UnitreeSdk2BridgeThread(void *arg)
     interface = std::make_unique<Go2Bridge>(m, d);
   }
   interface->start();
-  
+  // 이제부터 물리 루프가 스텝 직전에 토크를 계산한다.
+  g_bridge.store(interface.get(), std::memory_order_release);
+
   while (true)
   {
     sleep(1);
