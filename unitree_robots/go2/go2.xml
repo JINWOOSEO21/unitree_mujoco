@@ -1,6 +1,11 @@
 <mujoco model="go2">
   <compiler angle="radian" meshdir="assets" autolimits="true" />
 
+  <!-- timestep 은 지정하지 않는다 = MuJoCo 기본값 0.002.
+       학습(IsaacLab)의 sim_dt 는 0.005 라서 한 번 맞춰 봤지만 **더 나빠졌다**:
+       FixStand 가 z=0.226 까지밖에 못 올라간다(정상 0.360). MuJoCo 의 접촉 솔버는
+       PhysX 와 안정성 요구가 달라 이 접촉 설정(cone=elliptic, impratio=100)에서
+       5 ms 적분을 못 견딘다. 적분 간격을 학습과 맞추는 것은 옳은 레버가 아니다. -->
   <option cone="elliptic" impratio="100" />
 
   <default>
