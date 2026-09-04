@@ -7,7 +7,12 @@
     <default class="go2">
       <geom friction="0.4" margin="0.001" condim="1"/>
       <joint axis="0 1 0" damping="0.1" armature="0.01" frictionloss="0.2"/>
-      <motor ctrlrange="-23.7 23.7"/>
+      <!-- 원래 값은 Go2 실기 모터 스펙 ±23.7 N.m 였다. 학습(IsaacLab)은 hip 35 /
+           thigh 40 으로 돌았기 때문에, 그대로 두면 MuJoCo 가 우리 토크 포화
+           모델보다 **먼저** 23.7 에서 잘라 학습을 재현할 수 없다. 한계는
+           config.yaml 의 motor_saturation 이 담당하므로 여기서는 넉넉히 연다.
+           실기 스펙으로 되돌려 시험하려면 config.yaml 쪽 값을 바꿀 것. -->
+      <motor ctrlrange="-45.43 45.43"/>
       <default class="abduction">
         <joint axis="1 0 0" range="-1.0472 1.0472"/>
       </default>

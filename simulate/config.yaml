@@ -18,3 +18,30 @@ enable_elastic_band: 0 # Virtual spring band, used for lifting h1
 # L1 4D LiDAR 시뮬레이션 (rt/utlidar/cloud 로 PointCloud2 발행).
 # 파쿠르 정책의 elevation map 입력용. 다른 태스크는 0 으로 두면 된다.
 enable_lidar: 1
+
+# ---------------------------------------------------------------------------
+# 관절 토크 포화 모델 (IsaacLab ParkourDCMotor 재현)
+#
+# 실기 모터는 속도가 오를수록 낼 수 있는 토크가 줄어든다. 기본 브리지의 평범한
+# PD 에는 그 한계가 없어서 학습이 겪은 것보다 **센 로봇**이 되고, 그러면
+# sim2sim 결과가 낙관적으로 나온다 (계획서 §4 의 "실패 1순위" 항목).
+#
+#     tau_max = clip(sat*( 1 - dq/dq_lim),  0,  eff_lim)
+#     tau_min = clip(sat*(-1 - dq/dq_lim), -eff_lim, 0)
+#     tau     = clip(tau, tau_min, tau_max)
+#
+# 순서는 MuJoCo actuator 순서 = Unitree SDK 순서:
+#   FR(hip,thigh,calf), FL(...), RR(...), RL(...)
+# 값의 출처는 학습 계약 deploy.yaml 의 actuator 절(IsaacLab 순서를 SDK 로 옮긴 것).
+#
+# 주의 — 학습 한계 > 실기 스펙:
+#   Go2 실제 모터 스펙(= go2.xml 의 원래 ctrlrange)은 hip/thigh ±23.7, calf ±45.43 N·m 다.
+#   그런데 학습은 hip 35 / thigh 40 / calf 40 으로 돌았다. 즉 **정책은 실기보다 센
+#   모터를 전제로 학습됐다.** sim2sim 은 "이식이 맞았는가" 를 보는 단계라 학습값을
+#   그대로 쓰고, 실기 스펙으로 낮췄을 때 정책이 버티는지는 별도로 재야 한다
+#   (아래 값을 23.7/23.7/45.43 으로 바꿔 돌려 보면 된다).
+# ---------------------------------------------------------------------------
+motor_saturation:
+  effort_limit:      [35.0, 40.0, 40.0,  35.0, 40.0, 40.0,  35.0, 40.0, 40.0,  35.0, 40.0, 40.0]
+  saturation_effort: [35.0, 45.0, 45.0,  35.0, 45.0, 45.0,  35.0, 45.0, 45.0,  35.0, 45.0, 45.0]
+  velocity_limit:    [52.4, 30.1, 30.1,  52.4, 30.1, 30.1,  52.4, 30.1, 30.1,  52.4, 30.1, 30.1]

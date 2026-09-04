@@ -65,6 +65,12 @@ inline struct SimulationConfig
     // 기본은 꺼 둔다(레이캐스팅 비용이 있고 다른 태스크는 쓰지 않는다).
     int enable_lidar = 0;
 
+    // 관절 토크 포화 모델 (IsaacLab ParkourDCMotor 재현). 비어 있으면 끈다.
+    // 순서는 MuJoCo actuator 순서 = Unitree SDK 순서 (FR, FL, RR, RL) x (hip, thigh, calf).
+    std::vector<double> motor_effort_limit;
+    std::vector<double> motor_saturation_effort;
+    std::vector<double> motor_velocity_limit;
+
     void load_from_yaml(const std::string &filename)
     {
         auto cfg = YAML::LoadFile(filename);
@@ -87,6 +93,12 @@ inline struct SimulationConfig
             // 없어도 되는 항목 — 기존 config.yaml 을 그대로 쓸 수 있게 기본값 유지
             if (cfg["enable_lidar"]) {
                 enable_lidar = cfg["enable_lidar"].as<int>();
+            }
+            if (cfg["motor_saturation"]) {
+                auto ms = cfg["motor_saturation"];
+                motor_effort_limit = ms["effort_limit"].as<std::vector<double>>();
+                motor_saturation_effort = ms["saturation_effort"].as<std::vector<double>>();
+                motor_velocity_limit = ms["velocity_limit"].as<std::vector<double>>();
             }
         }
         catch(const std::exception& e)

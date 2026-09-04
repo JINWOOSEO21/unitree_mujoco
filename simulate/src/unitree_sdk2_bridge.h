@@ -118,10 +118,55 @@ protected:
     std::shared_ptr<unitree::common::UnitreeJoystick> joystick = nullptr;
     std::unique_ptr<l1::Lidar> lidar = nullptr;
 
+    // --- 관절 토크 포화 (IsaacLab ParkourDCMotor) ---------------------------
+    //
+    // 실기 모터는 속도가 오를수록 낼 수 있는 토크가 줄어든다. 기본 브리지의
+    // 평범한 PD 에는 그 한계가 없어서, 학습이 겪은 것보다 **센 로봇**이 된다.
+    // 학습(parkour_isaaclab/actuators/parkour_actuator_pd.py:66-74)과 같은 식:
+    //
+    //     tau_max = clip(sat*( 1 - dq/dq_lim),  0,  eff_lim)
+    //     tau_min = clip(sat*(-1 - dq/dq_lim), -eff_lim, 0)
+    //     tau     = clip(tau, tau_min, tau_max)
+    //
+    // 이 모델을 **시뮬레이터에 두는 이유**: 여기가 "하드웨어" 대역이고, 실기 모터도
+    // 자체 한계를 갖는다. 배포 코드(go2_ctrl)는 실기와 똑같이 q/kp/kd 만 보내면 되고
+    // 실기로 옮길 때 되돌릴 것이 없다.
+    std::vector<double> motor_eff_, motor_sat_, motor_vlim_;
+    bool motor_sat_ready_ = false;
+
+    void _init_motor_saturation()
+    {
+        const auto& e = param::config.motor_effort_limit;
+        const auto& s = param::config.motor_saturation_effort;
+        const auto& v = param::config.motor_velocity_limit;
+        if (e.empty() || s.empty() || v.empty()) return;
+        if ((int)e.size() != num_motor_ || (int)s.size() != num_motor_ ||
+            (int)v.size() != num_motor_) {
+            std::cerr << "[motor] 포화 모델 배열 길이가 액추에이터 수(" << num_motor_
+                      << ")와 다르다 — 끈다." << std::endl;
+            return;
+        }
+        motor_eff_ = e; motor_sat_ = s; motor_vlim_ = v;
+        motor_sat_ready_ = true;
+        std::cout << "[motor] 토크 포화 모델 활성 (IsaacLab ParkourDCMotor)" << std::endl;
+    }
+
+    double apply_motor_saturation(int i, double tau, double dq) const
+    {
+        if (!motor_sat_ready_) return tau;
+        const double r = dq / motor_vlim_[i];
+        double tmax = motor_sat_[i] * (1.0 - r);
+        double tmin = motor_sat_[i] * (-1.0 - r);
+        tmax = std::min(std::max(tmax, 0.0), motor_eff_[i]);
+        tmin = std::max(std::min(tmin, 0.0), -motor_eff_[i]);
+        return std::min(std::max(tau, tmin), tmax);
+    }
+
     void _check_sensor()
     {
         num_motor_ = mj_model_->nu;
         dim_motor_sensor_ = MOTOR_SENSOR_NUM * num_motor_;
+        _init_motor_saturation();
     
         // Find sensor addresses by name
         int sensor_id = -1;
@@ -219,9 +264,12 @@ public:
             std::lock_guard<std::mutex> lock(lowcmd->mutex_);
             for(int i(0); i<num_motor_; i++) {
                 auto & m = lowcmd->msg_.motor_cmd()[i];
-                mj_data_->ctrl[i] = m.tau() +
-                                    m.kp() * (m.q() - mj_data_->sensordata[i]) +
-                                    m.kd() * (m.dq() - mj_data_->sensordata[i + num_motor_]);
+                const double dq = mj_data_->sensordata[i + num_motor_];
+                double tau = m.tau() +
+                             m.kp() * (m.q() - mj_data_->sensordata[i]) +
+                             m.kd() * (m.dq() - dq);
+                tau = apply_motor_saturation(i, tau, dq);
+                mj_data_->ctrl[i] = tau;
             }
         }
 
