@@ -34,8 +34,16 @@
       <default class="collision">
         <geom group="3"/>
         <default class="foot">
+          <!-- 발 마찰 0.4 -> 1.15.
+               원래 값 0.4 는 **학습 분포 밖**이다. 학습(IsaacLab)은 지형 마찰 1.0 에
+               로봇 마찰을 (0.6, 2.0) 으로 랜덤화하고 combine_mode="average" 라
+               유효 마찰계수가 0.8 ~ 1.5 였다. 0.4 는 그 하한의 절반이라 발이 미끄러지고,
+               정책은 그런 바닥을 본 적이 없다.
+               priority="1" 이라 이 geom 의 마찰이 상대 geom 을 무시하고 그대로 쓰인다 —
+               즉 지형 쪽 friction 을 바꿔도 소용없고 여기서 바꿔야 한다.
+               1.15 는 학습 분포의 중앙값. -->
           <geom size="0.022" pos="-0.002 0 -0.213" priority="1" condim="6"
-            friction="0.4 0.02 0.01"/>
+            friction="1.15 0.02 0.01"/>
         </default>
       </default>
     </default>
