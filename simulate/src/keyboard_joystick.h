@@ -135,8 +135,19 @@ public:
 
 private:
     using Clock = std::chrono::steady_clock;
-    static constexpr int64_t kLatchMs = 500;       // 키를 누른 것으로 유지하는 시간
-    static constexpr int64_t kButtonDelayMs = 80;  // LT 가 Axis smoothing 을 통과할 여유
+    static constexpr int64_t kLatchMs = 1000;       // 키를 누른 것으로 유지하는 시간
+    static constexpr int64_t kButtonDelayMs = 300;  // LT 가 Axis smoothing 을 통과할 여유
+
+    // kButtonDelayMs 를 80 → 300 으로 늘린 이유 (실측):
+    // LT 는 Button 이 아니라 **Axis** 이고, 저역통과(smooth=0.03)를 **두 번** 거친다.
+    //   ① 시뮬레이터의 joystick.update() 가 smoothing 한 값을 wireless_remote 에 싣고
+    //   ② go2_ctrl 이 그 바이트를 다시 자기 UnitreeJoystick 으로 extract+update 한다.
+    // 한 단만 보면 threshold 0.5 까지 ~23 update(1kHz 에서 23ms)지만, 두 단이 겹치면
+    // 그보다 훨씬 길고 **부하에 따라 늘어난다**. 파쿠르 지형(241x561 hfield)을 얹어
+    // 브리지가 1kHz 에서 밀리자 80ms 로는 A 의 상승 엣지가 LT.pressed 보다 먼저 와서
+    // `LT + A.on_pressed` 가 성립하지 않았다 — 첫 번째 누름이 그냥 씹혔다.
+    // (실측: 평지에서는 3/3 성공, 파쿠르 지형에서는 첫 누름이 반복 실패.)
+    // 300ms 면 두 단 합보다 충분히 크고, latch 1s 안에서 A 가 700ms 켜져 있다.
 
     void latch(std::atomic<int64_t>& until)
     {
