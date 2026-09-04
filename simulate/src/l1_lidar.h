@@ -167,6 +167,15 @@ public:
 
             // flg_static=1: 지형(static geom)도 맞힌다.
             // bodyexclude=-1: 로봇 자신도 포함 — 실기와 같게 self-hit 을 남긴다.
+            //
+            // geomgroup=nullptr = 모든 geom(시각 메시 포함)을 맞힌다.
+            // 학습(IsaacLab)은 캐스트 대상을 `Robot/.*/collisions` 로 잡아 충돌
+            // 지오메트리만 맞히므로 group 2(class="visual")를 빼는 편이 더 충실할
+            // 것 같아 시험했다. 결과는 **중립** — scandots 직접관측 셀 오차가
+            // 0.364 cm 로 같았고(제외 시 0.362) 점 수만 1048 -> 1400 으로 늘었다.
+            // 근거 없이 동작을 바꾸지 않기 위해 원래대로 둔다. 필요하면
+            //   mjtByte g[6] = {1,1,0,1,1,1};   // 2=visual 만 제외
+            // 를 nullptr 자리에 넘기면 된다.
             const mjtNum dist = mj_ray(m_, d, sensor_pos, dir_w, nullptr, 1, -1, &geomid);
             if (dist < cfg_.min_range || dist > cfg_.max_range) continue;
 
