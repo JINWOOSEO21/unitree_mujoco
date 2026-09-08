@@ -47,7 +47,8 @@ static std::atomic<UnitreeSDK2BridgeBase *> g_bridge{nullptr};
 
 static inline void StepWithControl(mjModel *m, mjData *d)
 {
-  if (auto *b = g_bridge.load(std::memory_order_acquire)) {
+  auto *b = g_bridge.load(std::memory_order_acquire);
+  if (b) {
     b->apply_control();
     // 지연 통계를 2초마다 한 줄로 (표본이 모자라면 아무것도 안 찍는다).
     static auto last = std::chrono::steady_clock::now();
@@ -58,6 +59,9 @@ static inline void StepWithControl(mjModel *m, mjData *d)
     }
   }
   mj_step(m, d);
+  // 발행 스레드가 mj_step 도중의 sensordata 를 찢어 읽지 않도록, 완성된 값을 여기서
+  // 복사해 둔다 (touch 센서가 0 → 부분합 → 완성값으로 보이던 문제. bridge.h 참고).
+  if (b) b->capture_state();
 }
 
 extern "C"

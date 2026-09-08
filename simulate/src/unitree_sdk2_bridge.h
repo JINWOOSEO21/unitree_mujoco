@@ -9,7 +9,10 @@
 #include <unitree/idl/hg/BmsState_.hpp>
 #include <unitree/idl/hg/IMUState_.hpp>
 
+#include <algorithm>
 #include <iostream>
+#include <mutex>
+#include <vector>
 
 #include "param.h"
 #include "physics_joystick.h"
@@ -71,6 +74,35 @@ public:
     // 학습(IsaacLab)은 매 시뮬 스텝마다 현재 q/dq 로 토크를 계산하므로 여기서도 그렇게
     // 맞춘다. main.cc 의 물리 루프가 mj_step 직전에 호출한다.
     virtual void apply_control() {}
+
+    // mj_step **직후** 물리 스레드가 부른다 — 센서값을 통째로 복사해 둔다.
+    //
+    // 발행 스레드(run)가 mj_data_->sensordata 를 직접 읽으면 mj_step 도중의 값을 찢어
+    // 읽는다. touch 센서가 특히 그렇다: mj_sensorAcc 가 슬롯을 0 으로 지운 뒤 접촉점별로
+    // 누적하므로 "0 → 한 접촉만 더한 5 N → 완성 85 N" 이 그대로 lowstate 로 나갔다.
+    // 실측 foot_force 시계열: 84, 85, 77, 0, 6, 95, 85, 0, 5, 92, … (기립 중, 접촉 run
+    // 길이 중앙값 2~3 표본). 정책의 접촉 관측(obs 49:53)과 사이드카 leg odometry 가
+    // 둘 다 이 채널을 본다. 스냅샷은 한 스텝 안에서 서로 일관된 값이다.
+    void capture_state()
+    {
+        if (!mj_data_) return;
+        std::lock_guard<std::mutex> lk(snap_mtx_);
+        const size_t n = static_cast<size_t>(mj_model_->nsensordata);
+        if (snap_.size() != n) snap_.resize(n);
+        std::copy(mj_data_->sensordata, mj_data_->sensordata + n, snap_.begin());
+        snap_time_ = mj_data_->time;
+        snap_valid_ = true;
+    }
+
+    /// 발행 스레드용: 마지막 스냅샷 복사본. 아직 없으면 false.
+    bool snapshot(std::vector<double>& sd, double& t)
+    {
+        std::lock_guard<std::mutex> lk(snap_mtx_);
+        if (!snap_valid_) return false;
+        sd = snap_;
+        t = snap_time_;
+        return true;
+    }
 
     /// LowCmd 의 reserve 필드를 uint32 하나로 읽는다.
     /// unitree_go(go2) 는 스칼라, unitree_hg(g1/b2) 는 array<uint32_t,4> 라
@@ -149,6 +181,12 @@ protected:
     // 종단간 지연 표본 [us] — apply_control() 이 채우고 report_latency() 가 요약한다.
     std::vector<uint32_t> lat_us_;
     bool lat_enabled_ = true;
+
+    // mj_step 직후 센서 스냅샷 (capture_state / snapshot 참조)
+    std::mutex snap_mtx_;
+    std::vector<double> snap_;
+    double snap_time_ = 0.0;
+    bool snap_valid_ = false;
 
     // Sensor data indices
     int imu_quat_adr_ = -1;
@@ -366,19 +404,24 @@ public:
         if(lowstate->joystick) { lowstate->joystick->update(); }
         // 토크 계산은 여기서 하지 않는다 — apply_control() 이 물리 스텝과 동기로 한다.
 
+        // 센서는 mj_data_ 를 직접 읽지 않고 물리 스레드가 남긴 스냅샷을 쓴다 (capture_state).
+        std::vector<double> sd;
+        double sim_t = 0.0;
+        if (!snapshot(sd, sim_t)) return;
+
         // lowstate
         if(lowstate->trylock()) {
             for(int i(0); i<num_motor_; i++) {
-                lowstate->msg_.motor_state()[i].q() = mj_data_->sensordata[i];
-                lowstate->msg_.motor_state()[i].dq() = mj_data_->sensordata[i + num_motor_];
-                lowstate->msg_.motor_state()[i].tau_est() = mj_data_->sensordata[i + 2 * num_motor_];
+                lowstate->msg_.motor_state()[i].q() = sd[i];
+                lowstate->msg_.motor_state()[i].dq() = sd[i + num_motor_];
+                lowstate->msg_.motor_state()[i].tau_est() = sd[i + 2 * num_motor_];
             }
-            
+
             if(imu_quat_adr_ >= 0) {
-                lowstate->msg_.imu_state().quaternion()[0] = mj_data_->sensordata[imu_quat_adr_ + 0];
-                lowstate->msg_.imu_state().quaternion()[1] = mj_data_->sensordata[imu_quat_adr_ + 1];
-                lowstate->msg_.imu_state().quaternion()[2] = mj_data_->sensordata[imu_quat_adr_ + 2];
-                lowstate->msg_.imu_state().quaternion()[3] = mj_data_->sensordata[imu_quat_adr_ + 3];
+                lowstate->msg_.imu_state().quaternion()[0] = sd[imu_quat_adr_ + 0];
+                lowstate->msg_.imu_state().quaternion()[1] = sd[imu_quat_adr_ + 1];
+                lowstate->msg_.imu_state().quaternion()[2] = sd[imu_quat_adr_ + 2];
+                lowstate->msg_.imu_state().quaternion()[3] = sd[imu_quat_adr_ + 3];
 
                 double w = lowstate->msg_.imu_state().quaternion()[0];
                 double x = lowstate->msg_.imu_state().quaternion()[1];
@@ -391,42 +434,46 @@ public:
             }
             
             if(imu_gyro_adr_ >= 0) {
-                lowstate->msg_.imu_state().gyroscope()[0] = mj_data_->sensordata[imu_gyro_adr_ + 0];
-                lowstate->msg_.imu_state().gyroscope()[1] = mj_data_->sensordata[imu_gyro_adr_ + 1];
-                lowstate->msg_.imu_state().gyroscope()[2] = mj_data_->sensordata[imu_gyro_adr_ + 2];
+                lowstate->msg_.imu_state().gyroscope()[0] = sd[imu_gyro_adr_ + 0];
+                lowstate->msg_.imu_state().gyroscope()[1] = sd[imu_gyro_adr_ + 1];
+                lowstate->msg_.imu_state().gyroscope()[2] = sd[imu_gyro_adr_ + 2];
             }
 
             if(imu_acc_adr_ >= 0) {
-                lowstate->msg_.imu_state().accelerometer()[0] = mj_data_->sensordata[imu_acc_adr_ + 0];
-                lowstate->msg_.imu_state().accelerometer()[1] = mj_data_->sensordata[imu_acc_adr_ + 1];
-                lowstate->msg_.imu_state().accelerometer()[2] = mj_data_->sensordata[imu_acc_adr_ + 2];
+                lowstate->msg_.imu_state().accelerometer()[0] = sd[imu_acc_adr_ + 0];
+                lowstate->msg_.imu_state().accelerometer()[1] = sd[imu_acc_adr_ + 1];
+                lowstate->msg_.imu_state().accelerometer()[2] = sd[imu_acc_adr_ + 2];
             }
-            
+
             // 발 접촉력. MuJoCo touch 센서는 site 부피 안 접촉의 법선력 합(스칼라, N)을 낸다.
             // 실기 Go2 의 foot_force 는 정수형 원시값이라 스케일이 다르지만, 정책이 쓰는 것은
             // "임계값 초과 여부"(2N)뿐이므로 물리량 그대로 넣는다.
             if constexpr (has_foot_force<std::decay_t<decltype(lowstate->msg_)>>::value) {
                 for (int i = 0; i < 4; i++) {
                     if (foot_touch_adr_[i] >= 0) {
-                        lowstate->msg_.foot_force()[i] = mj_data_->sensordata[foot_touch_adr_[i]];
+                        lowstate->msg_.foot_force()[i] = sd[foot_touch_adr_[i]];
                     }
                 }
             }
 
-            lowstate->msg_.tick() = std::round(mj_data_->time / 1e-3);
+            lowstate->msg_.tick() = std::round(sim_t / 1e-3);
             lowstate->unlockAndPublish();
         }
         // highstate
         if(highstate->trylock()) {
+            // sim 시각 — lowstate.tick 과 같은 시계. 사이드카가 GT 와 lowstate 를 시각으로
+            // 정렬하는 데 쓴다 (수신 시각으로 맞추면 스레드 지터로 수 ms 어긋난다).
+            highstate->msg_.stamp().sec() = static_cast<int32_t>(sim_t);
+            highstate->msg_.stamp().nanosec() = static_cast<uint32_t>((sim_t - std::floor(sim_t)) * 1e9);
             if(frame_pos_adr_ >= 0) {
-                highstate->msg_.position()[0] = mj_data_->sensordata[frame_pos_adr_ + 0];
-                highstate->msg_.position()[1] = mj_data_->sensordata[frame_pos_adr_ + 1];
-                highstate->msg_.position()[2] = mj_data_->sensordata[frame_pos_adr_ + 2];
+                highstate->msg_.position()[0] = sd[frame_pos_adr_ + 0];
+                highstate->msg_.position()[1] = sd[frame_pos_adr_ + 1];
+                highstate->msg_.position()[2] = sd[frame_pos_adr_ + 2];
             }
             if(frame_vel_adr_ >= 0) {
-                highstate->msg_.velocity()[0] = mj_data_->sensordata[frame_vel_adr_ + 0];
-                highstate->msg_.velocity()[1] = mj_data_->sensordata[frame_vel_adr_ + 1];
-                highstate->msg_.velocity()[2] = mj_data_->sensordata[frame_vel_adr_ + 2];
+                highstate->msg_.velocity()[0] = sd[frame_vel_adr_ + 0];
+                highstate->msg_.velocity()[1] = sd[frame_vel_adr_ + 1];
+                highstate->msg_.velocity()[2] = sd[frame_vel_adr_ + 2];
             }
             highstate->unlockAndPublish();
         }
@@ -474,13 +521,17 @@ public:
     {
         RobotBridge::run();
 
+        std::vector<double> sd;
+        double sim_t = 0.0;
+        if (!snapshot(sd, sim_t)) return;
+
         // secondary IMU state
         if (secondary_imustate->trylock()) {
             if(secondary_imu_quat_adr_ >= 0) {
-                secondary_imustate->msg_.quaternion()[0] = mj_data_->sensordata[secondary_imu_quat_adr_ + 0];
-                secondary_imustate->msg_.quaternion()[1] = mj_data_->sensordata[secondary_imu_quat_adr_ + 1];
-                secondary_imustate->msg_.quaternion()[2] = mj_data_->sensordata[secondary_imu_quat_adr_ + 2];
-                secondary_imustate->msg_.quaternion()[3] = mj_data_->sensordata[secondary_imu_quat_adr_ + 3];
+                secondary_imustate->msg_.quaternion()[0] = sd[secondary_imu_quat_adr_ + 0];
+                secondary_imustate->msg_.quaternion()[1] = sd[secondary_imu_quat_adr_ + 1];
+                secondary_imustate->msg_.quaternion()[2] = sd[secondary_imu_quat_adr_ + 2];
+                secondary_imustate->msg_.quaternion()[3] = sd[secondary_imu_quat_adr_ + 3];
 
                 double w = secondary_imustate->msg_.quaternion()[0];
                 double x = secondary_imustate->msg_.quaternion()[1];
@@ -493,15 +544,15 @@ public:
             }
 
             if(secondary_imu_gyro_adr_ >= 0) {
-                secondary_imustate->msg_.gyroscope()[0] = mj_data_->sensordata[secondary_imu_gyro_adr_ + 0];
-                secondary_imustate->msg_.gyroscope()[1] = mj_data_->sensordata[secondary_imu_gyro_adr_ + 1];
-                secondary_imustate->msg_.gyroscope()[2] = mj_data_->sensordata[secondary_imu_gyro_adr_ + 2];
+                secondary_imustate->msg_.gyroscope()[0] = sd[secondary_imu_gyro_adr_ + 0];
+                secondary_imustate->msg_.gyroscope()[1] = sd[secondary_imu_gyro_adr_ + 1];
+                secondary_imustate->msg_.gyroscope()[2] = sd[secondary_imu_gyro_adr_ + 2];
             }
 
             if(secondary_imu_acc_adr_ >= 0) {
-                secondary_imustate->msg_.accelerometer()[0] = mj_data_->sensordata[secondary_imu_acc_adr_ + 0];
-                secondary_imustate->msg_.accelerometer()[1] = mj_data_->sensordata[secondary_imu_acc_adr_ + 1];
-                secondary_imustate->msg_.accelerometer()[2] = mj_data_->sensordata[secondary_imu_acc_adr_ + 2];
+                secondary_imustate->msg_.accelerometer()[0] = sd[secondary_imu_acc_adr_ + 0];
+                secondary_imustate->msg_.accelerometer()[1] = sd[secondary_imu_acc_adr_ + 1];
+                secondary_imustate->msg_.accelerometer()[2] = sd[secondary_imu_acc_adr_ + 2];
             }
 
             secondary_imustate->unlockAndPublish();
