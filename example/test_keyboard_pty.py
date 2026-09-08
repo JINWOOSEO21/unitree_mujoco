@@ -70,7 +70,9 @@ def spawn_sim_on_pty(foreground: bool, sim_dir: Path, display: str):
             if not foreground:
                 os.setpgid(0, 0)
             os.chdir(sim_dir)
-            os.execve("./unitree_mujoco", ["./unitree_mujoco"],
+            # SIM_ARGS 환경변수로 추가 인자 전달 (예: SIM_ARGS="-s scene_parkour_stairs.xml")
+            extra = os.environ.get("SIM_ARGS", "").split()
+            os.execve("./unitree_mujoco", ["./unitree_mujoco", *extra],
                       dict(os.environ, DISPLAY=display))
             os._exit(127)
         os.write(wr, str(sim).encode())
