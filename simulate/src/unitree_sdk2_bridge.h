@@ -372,6 +372,18 @@ public:
         if(!mj_data_) return;
         const bool direct = (int)act_qposadr_.size() == num_motor_;
         std::lock_guard<std::mutex> lock(lowcmd->mutex_);
+        // 컨트롤러가 아직 한 번도 LowCmd 를 보내지 않았으면 시작 자세("down" 키프레임)를
+        // 약한 PD 로 붙들어 둔다. 관절 마찰이 0 이라(학습과 맞춤) 토크 없이 두면 접힌 자세가
+        // 수십 초에 걸쳐 무너져(엉덩이 벌어짐, 기울기 30°) 그 자세에서 기립하면 뒤집힐 수 있다.
+        // 실기는 기어 마찰이 자세를 잡아 준다. 첫 LowCmd 이후에는 절대 개입하지 않는다.
+        if (!seen_lowcmd_) {
+            if (!lowcmd->isTimeout()) {
+                seen_lowcmd_ = true;
+            } else {
+                hold_start_pose(direct);
+                return;
+            }
+        }
         // 종단간 지연 계측. go2_ctrl 의 State_Parkour 가 lowcmd.reserve 에 "이 목표각을
         // 정책이 만든 시각"[us, CLOCK_MONOTONIC]을 실어 보낸다. 토크를 거는 지금
         // 그 나이를 재면 정책→토크 지연이 그대로 나온다.
@@ -497,6 +509,20 @@ public:
     std::unique_ptr<HighState_t> highstate;
     std::unique_ptr<WirelessController_t> wireless_controller;
     std::shared_ptr<LowCmd_t> lowcmd;
+    bool seen_lowcmd_ = false;
+
+    void hold_start_pose(bool direct)
+    {
+        const int key = mj_name2id(mj_model_, mjOBJ_KEY, "down");
+        for(int i(0); i<num_motor_; i++) {
+            if (key < 0) { mj_data_->ctrl[i] = 0; continue; }
+            const double q  = direct ? mj_data_->qpos[act_qposadr_[i]] : mj_data_->sensordata[i];
+            const double dq = direct ? mj_data_->qvel[act_qveladr_[i]] : mj_data_->sensordata[i + num_motor_];
+            const double q_des = mj_model_->key_ctrl[key * mj_model_->nu + i];
+            const double tau = 20.0 * (q_des - q) - 0.5 * dq;   // 약한 유지 게인 (FixStand 60/80 의 1/3)
+            mj_data_->ctrl[i] = apply_motor_saturation(i, tau, dq);
+        }
+    }
     std::unique_ptr<LowState_t> lowstate;
     
 private:
