@@ -565,6 +565,15 @@ namespace
 
 //-------------------------------------- physics_thread --------------------------------------------
 
+// 시작·리셋 자세: 모델에 "down" 키프레임이 있으면 그 자세(실기의 접힌 자세)로 놓는다.
+// 없으면 qpos=0 (다리를 앞으로 뻗은 채 바닥) — 그 자세에서 기립하면 뒤로 뒤집힌다.
+static void ResetToStartPose(mjModel *m, mjData *d)
+{
+  mj_resetData(m, d);
+  int key = mj_name2id(m, mjOBJ_KEY, "down");
+  if (key >= 0) mj_resetDataKeyframe(m, d, key);
+}
+
 void PhysicsThread(mj::Simulate *sim, const char *filename)
 {
   // request loadmodel if file given (otherwise drag-and-drop)
@@ -573,7 +582,10 @@ void PhysicsThread(mj::Simulate *sim, const char *filename)
     sim->LoadMessage(filename);
     m = LoadModel(filename, *sim);
     if (m)
+    {
       d = mj_makeData(m);
+      ResetToStartPose(m, d);
+    }
     if (d)
     {
       sim->Load(m, d, filename);
@@ -673,7 +685,7 @@ void user_key_cb(GLFWwindow* window, int key, int scancode, int act, int mods) {
       }
     }
     if(key==GLFW_KEY_BACKSPACE) {
-      mj_resetData(m, d);
+      ResetToStartPose(m, d);
       mj_forward(m, d);
     }
   }
