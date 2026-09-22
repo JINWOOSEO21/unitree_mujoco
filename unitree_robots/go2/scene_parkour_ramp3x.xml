@@ -1,5 +1,5 @@
 <mujoco model="go2 parkour scene">
-  <!-- sim2sim 시험용: 램프 높이 3배(기울기 유지) — parkour/mujoco/make_tall_ramp.py 가 고친 지형.
+  <!-- sim2sim 시험용: 램프 높이 3배(기울기 유지) — parkour/terrain/make_tall_ramp.py 가 고친 지형.
        terrain_to_mjhfield.py 가 생성. 원본은 Isaaclab_Parkour 의
        deploy/tools/export_terrain.py 가 IsaacLab 삼각망에서 레이캐스팅으로 구운 것
        (평균 오차 3.29 mm). 높이는 float32 바이너리라 양자화가 없다.
