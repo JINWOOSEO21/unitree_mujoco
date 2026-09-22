@@ -55,6 +55,9 @@
 #include <unitree/idl/ros2/PointCloud2_.hpp>
 
 #include "l1_scan_kinematics.h"  // 스캔 운동학(순수 수학, 단독 테스트 대상)
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 
 namespace l1
 {
@@ -82,6 +85,18 @@ struct Config
     double      publish_hz = 10.0;         // 프레임(0.1s) 주기
 };
 
+// 스레드 구조 (2026-09-22 수정)
+// ----------------------------------
+// 예전에는 브리지 스레드(lowstate 1 kHz 발행)가 update() 안에서 2160 개 mj_ray 를
+// **동기로** 돌렸다. 파쿠르 hfield(241x561 셀)에 대한 캐스트는 약 50 ms 라, 10 Hz 마다
+// lowstate 가 50~67 ms 씩 끊겼다 (시간의 54 %!). 물리는 그동안 계속 진행하므로 수신 쪽은
+// 회전·이동을 통째로 잃는다 — 자이로를 적분하는 추정기(MIT)는 자세가 10° 씩 틀어지고,
+// 다리 odometry 도 한 표본으로 50 ms 를 적분하게 된다. 실기 lowstate 에는 없는 현상이다.
+//
+// 지금은 물리 스레드가 mj_step 직후 10 Hz 로 mjData 를 통째로 복사해(snapshot) 워커
+// 스레드에 넘기고, 워커가 그 복사본에 캐스트해 발행한다. mj_copyData 는 이 모델에서
+// 1 ms 미만이라 물리 스텝 한 번 정도의 지연이고, 브리지 스레드는 LiDAR 와 무관해진다.
+// (레이캐스트 자체는 mj_ray 가 mjData 의 xpos/geom_xpos 만 읽으므로 복사본으로 충분하다.)
 class Lidar
 {
 public:
@@ -117,17 +132,57 @@ public:
                          sensor_msgs::msg::dds_::PointCloud2_>(cfg_.topic));
         publisher_->InitChannel();
         init_msg_layout();
+        d_in_ = mj_makeData(m_);
+        d_work_ = mj_makeData(m_);
+        worker_ = std::thread([this] { worker_loop(); });
+    }
+
+    ~Lidar()
+    {
+        {
+            std::lock_guard<std::mutex> lk(mtx_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) worker_.join();
+        mj_deleteData(d_in_);
+        mj_deleteData(d_work_);
     }
 
     bool ok() const { return base_body_ >= 0; }
 
-    /** 시뮬레이션 시각 t_end 기준으로 직전 0.1s 프레임을 캐스트해 발행한다. */
+    /** 물리 스레드가 mj_step 직후에 부른다. 10 Hz(시뮬 시각)마다 mjData 를 복사해 워커를 깨운다. */
+    void snapshot(const mjData* d)
+    {
+        if (!ok()) return;
+        if (d->time - last_snapshot_ < 1.0 / cfg_.publish_hz) return;
+        last_snapshot_ = d->time;
+        std::lock_guard<std::mutex> lk(mtx_);
+        mj_copyData(d_in_, m_, d);
+        pending_ = true;
+        cv_.notify_one();
+    }
+
+    /** 워커 스레드: 복사본이 들어올 때마다 캐스트해 발행한다. */
+    void worker_loop()
+    {
+        for (;;) {
+            {
+                std::unique_lock<std::mutex> lk(mtx_);
+                cv_.wait(lk, [this] { return pending_ || stop_; });
+                if (stop_) return;
+                pending_ = false;
+                std::swap(d_in_, d_work_);   // 락은 포인터 교환 동안만 잡는다 (캐스트 ~50 ms 는 락 밖)
+            }
+            update(d_work_);
+        }
+    }
+
+    /** 시뮬레이션 시각 t_end 기준으로 직전 0.1s 프레임을 캐스트해 발행한다 (워커 스레드에서). */
     void update(const mjData* d)
     {
         if (!ok()) return;
         const double now = d->time;
-        if (now - last_publish_ < 1.0 / cfg_.publish_hz) return;
-        last_publish_ = now;
 
         // --- 센서 pose (world) ---
         // base 의 world pose 에 마운트 offset 을 얹는다.
@@ -139,7 +194,7 @@ public:
         // 그대로 쓰면 회전행렬이 영행렬이라 방향 벡터가 길이 0 이 되고
         // mj_ray 가 "vector length is too small" 로 죽는다. 자세가 설 때까지 건너뛴다.
         if (mju_norm3(base_mat) < 0.5) {
-            last_publish_ = -1e9;  // 다음 호출에서 곧바로 다시 시도
+            last_snapshot_ = -1e9;  // 다음 스텝에서 곧바로 다시 시도
             return;
         }
 
@@ -241,8 +296,17 @@ private:
 
     std::vector<double> dirs_;
     std::vector<float> points_;
-    double last_publish_ = -1e9;
+    double last_snapshot_ = -1e9;
     int last_n_ = 0;
+
+    // 물리 스레드 → 워커 스레드 인계용 mjData 복사본 두 개 (snapshot / worker_loop 참조)
+    mjData* d_in_ = nullptr;
+    mjData* d_work_ = nullptr;
+    std::thread worker_;
+    std::mutex mtx_;
+    std::condition_variable cv_;
+    bool pending_ = false;
+    bool stop_ = false;
 
     sensor_msgs::msg::dds_::PointCloud2_ msg_;
     unitree::robot::ChannelPublisherPtr<sensor_msgs::msg::dds_::PointCloud2_> publisher_;

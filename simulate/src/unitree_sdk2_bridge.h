@@ -74,6 +74,8 @@ public:
     // 학습(IsaacLab)은 매 시뮬 스텝마다 현재 q/dq 로 토크를 계산하므로 여기서도 그렇게
     // 맞춘다. main.cc 의 물리 루프가 mj_step 직전에 호출한다.
     virtual void apply_control() {}
+    // mj_step 직후 물리 스레드가 부른다 — LiDAR 워커에 mjData 복사본을 넘긴다 (RobotBridge 가 구현).
+    virtual void lidar_snapshot(const mjData*) {}
 
     // mj_step **직후** 물리 스레드가 부른다 — 센서값을 통째로 복사해 둔다.
     //
@@ -481,10 +483,15 @@ public:
         if(wireless_controller->joystick) {
             wireless_controller->unlockAndPublish();
         }
-        // L1 LiDAR — 내부에서 10Hz 로 스로틀한다 (브리지는 1kHz 로 돈다)
-        if(lidar) {
-            lidar->update(mj_data_);
-        }
+        // L1 LiDAR 는 여기서 캐스트하지 않는다 — 물리 스레드가 lidar_snapshot() 으로 복사본을
+        // 넘기고 LiDAR 워커 스레드가 캐스트한다 (l1_lidar.h 상단 주석). 예전처럼 이 스레드에서
+        // 캐스트하면 lowstate 가 10 Hz 마다 50 ms 씩 끊긴다.
+    }
+
+    // mj_step 직후 물리 스레드가 부른다 (main.cc StepWithControl).
+    void lidar_snapshot(const mjData* d) override
+    {
+        if (lidar) lidar->snapshot(d);
     }
 
     std::unique_ptr<HighState_t> highstate;

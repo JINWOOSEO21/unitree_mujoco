@@ -61,7 +61,10 @@ static inline void StepWithControl(mjModel *m, mjData *d)
   mj_step(m, d);
   // 발행 스레드가 mj_step 도중의 sensordata 를 찢어 읽지 않도록, 완성된 값을 여기서
   // 복사해 둔다 (touch 센서가 0 → 부분합 → 완성값으로 보이던 문제. bridge.h 참고).
-  if (b) b->capture_state();
+  if (b) {
+    b->capture_state();
+    b->lidar_snapshot(d);   // 10 Hz 로 mjData 복사 → LiDAR 워커 (l1_lidar.h 참조)
+  }
 }
 
 extern "C"
